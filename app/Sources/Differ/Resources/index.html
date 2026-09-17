@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Differ</title>
+
+<style>
+  :root{
+    --bg: #f5f5f7;
+    --panel: #ffffff;
+    --border: #e0e0e3;
+    --text: #1c1c1e;
+    --muted: #86868b;
+    --accent: #0a84ff;
+    --add-bg: #d8f5db;
+    --add-text: #0d5f22;
+    --add-border: #9fdca9;
+    --del-bg: #fbdadd;
+    --del-text: #8a1620;
+    --del-border: #f2adb4;
+    --del-strike: #b23a44;
+    --btn-bg: #eeeef0;
+    --btn-bg-hover: #e2e2e5;
+    --btn-active-bg: var(--accent);
+    --btn-active-text: #fff;
+    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 1px 8px rgba(0,0,0,0.03);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg: #1c1c1e;
+      --panel: #262628;
+      --border: #3a3a3c;
+      --text: #f2f2f7;
+      --muted: #9a9a9e;
+      --accent: #409cff;
+      --add-bg: #123a1c;
+      --add-text: #7ee897;
+      --add-border: #1f5c30;
+      --del-bg: #3d1418;
+      --del-text: #ff8a93;
+      --del-border: #6b1f27;
+      --del-strike: #ff8a93;
+      --btn-bg: #333335;
+      --btn-bg-hover: #3e3e40;
+      --btn-active-bg: var(--accent);
+      --btn-active-text: #0b0b0c;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 8px rgba(0,0,0,0.25);
+    }
+  }
+  *{ box-sizing: border-box; }
+  html, body{ height: 100%; }
+  body{
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+  header{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    -webkit-app-region: drag;
+    flex-wrap: wrap;
+  }
+  header h1{
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 8px 0 0;
+    letter-spacing: -0.01em;
+    -webkit-app-region: no-drag;
+  }
+  .controls{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    -webkit-app-region: no-drag;
+    flex-wrap: wrap;
+  }
+  select, .btn{
+    -webkit-app-region: no-drag;
+    font: inherit;
+    color: var(--text);
+    background: var(--btn-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 9px;
+    cursor: pointer;
+    transition: background .1s ease;
+  }
+  select:hover, .btn:hover{ background: var(--btn-bg-hover); }
+  .btn.active{ background: var(--btn-active-bg); color: var(--btn-active-text); border-color: transparent; }
+  .toggle-group{ display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .toggle-group .btn{ border:none; border-radius:0; }
+  .toggle-group .btn+.btn{ border-left:1px solid var(--border); }
+  label.chk{
+    display:flex; align-items:center; gap:5px;
+    color: var(--muted); user-select:none; cursor:pointer;
+    -webkit-app-region: no-drag;
+  }
+  label.chk input{ accent-color: var(--accent); }
+  .spacer{ flex: 1; }
+  .stats{
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    display:flex; gap:10px; -webkit-app-region:no-drag;
+  }
+  .stats b.add{ color: var(--add-text); }
+  .stats b.del{ color: var(--del-text); }
+
+  main{
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+  .inputs{
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .pane{
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .pane + .pane{ border-left: 1px solid var(--border); }
+  .pane-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 6px 10px;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .pane-head button{
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px;
+  }
+  .pane-head button:hover{ background: var(--btn-bg); color: var(--text); }
+  textarea{
+    flex: 1;
+    resize: none;
+    border: none;
+    outline: none;
+    background: var(--panel);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    tab-size: 2;
+  }
+
+  #resultWrap{
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #resultWrap.hidden{ display:none; }
+  .diffpane{
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 10px 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--panel);
+  }
+  .diffpane + .diffpane{ border-left: 1px solid var(--border); }
+  .diffpane .lbl{
+    display:block; color: var(--muted); font-family: -apple-system, sans-serif;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    margin-bottom: 6px;
+  }
+  ins, del{ text-decoration: none; border-radius: 3px; }
+  ins{ background: var(--add-bg); color: var(--add-text); box-shadow: 0 0 0 1px var(--add-border) inset; }
+  del{ background: var(--del-bg); color: var(--del-text); text-decoration: line-through; text-decoration-color: var(--del-strike); box-shadow: 0 0 0 1px var(--del-border) inset; }
+
+  .empty{
+    color: var(--muted);
+    display:flex; align-items:center; justify-content:center;
+    height:100%; text-align:center; padding: 0 20px;
+  }
+
+  /* resizable split between inputs and result */
+  #splitter{
+    height: 6px;
+    cursor: row-resize;
+    background: var(--bg);
+    position: relative;
+  }
+  #splitter::after{
+    content:"";
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width: 32px; height: 3px; border-radius: 2px; background: var(--border);
+  }
+
+  ::-webkit-scrollbar{ width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb{ background: var(--border); border-radius: 6px; }
+  ::-webkit-scrollbar-track{ background: transparent; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Differ</h1>
+
+  <div class="controls">
+    <select id="granularity" title="Diff granularity">
+      <option value="word" selected>Words</option>
+      <option value="char">Characters</option>
+      <option value="line">Lines</option>
+    </select>
+
+    <div class="toggle-group" role="group" aria-label="View mode">
+      <button class="btn" data-view="split">Side by side</button>
+      <button class="btn active" data-view="inline">Inline</button>
+    </div>
+
+    <label class="chk"><input type="checkbox" id="ignoreCase"> Ignore case</label>
+    <label class="chk"><input type="checkbox" id="ignoreWs"> Ignore whitespace</label>
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="stats">
+    <span><b class="add" id="addCount">0</b> added</span>
+    <span><b class="del" id="delCount">0</b> removed</span>
+  </div>
+
+  <div class="controls">
+    <button class="btn" id="swapBtn" title="Swap (⌘⇧S)">Swap</button>
+    <button class="btn" id="clearBtn" title="Clear both (⌘K)">Clear</button>
+  </div>
+</header>
+
+<main>
+  <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
+
+    <div class="inputs" id="inputsRow" style="flex: 1 1 40%;">
+      <div class="pane">
+        <div class="pane-head">
+          <span>Original</span>
+          <button data-clear="a">clear</button>
+        </div>
+        <textarea id="textA" placeholder="Paste or type the original text…" spellcheck="false"></textarea>
+      </div>
+      <div class="pane">
+        <div class="pane-head">
+          <span>Changed</span>
+          <button data-clear="b">clear</button>
+        </div>
+        <textarea id="textB" placeholder="Paste or type the changed text…" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <div id="splitter"></div>
+
+    <div id="resultWrap" style="flex: 1 1 60%;">
+      <div class="diffpane" id="leftResult"></div>
+      <div class="diffpane" id="rightResult" style="display:none"></div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+(function(){
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const textA = $('textA'), textB = $('textB');
+  const leftResult = $('leftResult'), rightResult = $('rightResult');
+  const granularitySel = $('granularity');
+  const ignoreCase = $('ignoreCase'), ignoreWs = $('ignoreWs');
+  const addCount = $('addCount'), delCount = $('delCount');
+  const viewBtns = document.querySelectorAll('.toggle-group [data-view]');
+
+  let view = 'inline';
+
+  // ---------- persistence ----------
+  const STORE_KEY = 'differ.state.v1';
+  function saveState(){
+    try{
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        a: textA.value, b: textB.value,
+        granularity: granularitySel.value,
+        ignoreCase: ignoreCase.checked,
+        ignoreWs: ignoreWs.checked,
+        view
+      }));
+    }catch(e){}
+  }
+  function loadState(){
+    try{
+      const raw = localStorage.getItem(STORE_KEY);
+      if(!raw) return;
+      const s = JSON.parse(raw);
+      textA.value = s.a || '';
+      textB.value = s.b || '';
+      granularitySel.value = s.granularity || 'word';
+      ignoreCase.checked = !!s.ignoreCase;
+      ignoreWs.checked = !!s.ignoreWs;
+      view = s.view === 'inline' ? 'inline' : 'split';
+    }catch(e){}
+  }
+
+  // ---------- tokenizers ----------
+  function tokenizeChars(text){
+    return Array.from(text);
+  }
+  function tokenizeWords(text){
+    return text.match(/\s+|[^\s]+/g) || [];
+  }
+  function tokenizeLines(text){
+    const parts = text.split(/(?<=\n)/);
+    if(parts.length && parts[parts.length-1] === '') parts.pop();
+    return parts;
+  }
+  function tokenize(text, mode){
+    if(mode === 'char') return tokenizeChars(text);
+    if(mode === 'line') return tokenizeLines(text);
+    return tokenizeWords(text);
+  }
+
+  function normalize(tok, opts){
+    let t = tok;
+    if(opts.ignoreWs && /^\s+$/.test(t)) t = ' ';
+    if(opts.ignoreCase) t = t.toLowerCase();
+    return t;
+  }
+
+  // ---------- Myers diff over arbitrary token arrays ----------
+  // Returns array of {type: 'equal'|'insert'|'delete', tok: string}
+  function diffTokens(aTokens, bTokens, opts){
+    const na = aTokens.map(t => normalize(t, opts));
+    const nb = bTokens.map(t => normalize(t, opts));
+    const N = na.length, M = nb.length;
+    const MAX = N + M;
+    if(MAX === 0) return [];
+
+    const offset = MAX;
+    const size = 2 * MAX + 1;
+    let v = new Int32Array(size);
+    const trace = [];
+
+    let dFinal = -1;
+    outer:
+    for(let d = 0; d <= MAX; d++){
+      trace.push(v.slice());
+      for(let k = -d; k <= d; k += 2){
+        let x;
+        if(k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])){
+          x = v[offset + k + 1];
+        } else {
+          x = v[offset + k - 1] + 1;
+        }
+        let y = x - k;
+        while(x < N && y < M && na[x] === nb[y]){ x++; y++; }
+        v[offset + k] = x;
+        if(x >= N && y >= M){ dFinal = d; break outer; }
+      }
+    }
+
+    // backtrack
+    let x = N, y = M;
+    const ops = [];
+    for(let d = trace.length - 1; d >= 0; d--){
+      const vv = trace[d];
+      const k = x - y;
+      let prevK;
+      if(k === -d || (k !== d && vv[offset + k - 1] < vv[offset + k + 1])){
+        prevK = k + 1;
+      } else {
+        prevK = k - 1;
+      }
+      const prevX = vv[offset + prevK];
+      const prevY = prevX - prevK;
+
+      while(x > prevX && y > prevY){
+        ops.push({type:'equal', a: x-1, b: y-1});
+        x--; y--;
+      }
+      if(d > 0){
+        if(x === prevX){
+          ops.push({type:'insert', b: y-1});
+          y--;
+        } else {
+          ops.push({type:'delete', a: x-1});
+          x--;
+        }
+      }
+    }
+    ops.reverse();
+
+    // map back to original (un-normalized) token text, and merge consecutive same-type runs
+    const merged = [];
+    for(const op of ops){
+      const text = op.type === 'insert' ? bTokens[op.b] : aTokens[op.a];
+      if(merged.length && merged[merged.length-1].type === op.type){
+        merged[merged.length-1].text += text;
+      } else {
+        merged.push({type: op.type, text});
+      }
+    }
+    return merged;
+  }
+
+  function esc(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function runDiff(){
+    const mode = granularitySel.value;
+    const opts = { ignoreCase: ignoreCase.checked, ignoreWs: ignoreWs.checked };
+    const a = textA.value, b = textB.value;
+
+    if(a === '' && b === ''){
+      leftResult.innerHTML = '<div class="empty">Type or paste text on both sides to see the diff.</div>';
+      rightResult.innerHTML = '';
+      addCount.textContent = '0';
+      delCount.textContent = '0';
+      return;
+    }
+
+    const aTok = tokenize(a, mode);
+    const bTok = tokenize(b, mode);
+    const ops = diffTokens(aTok, bTok, opts);
+
+    let adds = 0, dels = 0;
+    for(const op of ops){
+      if(op.type === 'insert') adds += op.text.length;
+      else if(op.type === 'delete') dels += op.text.length;
+    }
+    addCount.textContent = adds;
+    delCount.textContent = dels;
+
+    if(view === 'inline'){
+      let html = '';
+      for(const op of ops){
+        const t = esc(op.text);
+        if(op.type === 'equal') html += t;
+        else if(op.type === 'insert') html += '<ins>' + t + '</ins>';
+        else html += '<del>' + t + '</del>';
+      }
+      leftResult.innerHTML = html || '<div class="empty">No differences.</div>';
+      rightResult.style.display = 'none';
+      leftResult.style.flex = '1';
+    } else {
+      let leftHtml = '', rightHtml = '';
+      for(const op of ops){
+        const t = esc(op.text);
+        if(op.type === 'equal'){ leftHtml += t; rightHtml += t; }
+        else if(op.type === 'delete'){ leftHtml += '<del>' + t + '</del>'; }
+        else if(op.type === 'insert'){ rightHtml += '<ins>' + t + '</ins>'; }
+      }
+      leftResult.innerHTML = leftHtml || '<div class="empty">Empty</div>';
+      rightResult.innerHTML = rightHtml || '<div class="empty">Empty</div>';
+      rightResult.style.display = 'block';
+    }
+  }
+
+  // ---------- wiring ----------
+  let timer = null;
+  function scheduleDiff(){
+    clearTimeout(timer);
+    timer = setTimeout(() => { runDiff(); saveState(); }, 120);
+  }
+
+  [textA, textB, granularitySel, ignoreCase, ignoreWs].forEach(el => {
+    el.addEventListener('input', scheduleDiff);
+    el.addEventListener('change', scheduleDiff);
+  });
+
+  viewBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      view = btn.dataset.view;
+      viewBtns.forEach(b => b.classList.toggle('active', b === btn));
+      runDiff();
+      saveState();
+    });
+  });
+
+  document.querySelectorAll('[data-clear]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const which = btn.dataset.clear;
+      if(which === 'a') textA.value = '';
+      else textB.value = '';
+      scheduleDiff();
+    });
+  });
+
+  $('clearBtn').addEventListener('click', () => {
+    textA.value = ''; textB.value = '';
+    scheduleDiff();
+  });
+
+  $('swapBtn').addEventListener('click', () => {
+    const tmp = textA.value;
+    textA.value = textB.value;
+    textB.value = tmp;
+    scheduleDiff();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if(!mod) return;
+    if(e.key.toLowerCase() === 'k'){
+      e.preventDefault();
+      textA.value = ''; textB.value = '';
+      scheduleDiff();
+    } else if(e.shiftKey && e.key.toLowerCase() === 's'){
+      e.preventDefault();
+      $('swapBtn').click();
+    }
+  });
+
+  // splitter drag to resize inputs vs result
+  (function(){
+    const splitter = $('splitter');
+    const inputsRow = $('inputsRow');
+    const resultWrap = $('resultWrap');
+    let dragging = false;
+    splitter.addEventListener('mousedown', (e) => {
+      dragging = true;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if(!dragging) return;
+      const main = inputsRow.parentElement.getBoundingClientRect();
+      const y = e.clientY - main.top;
+      const total = main.height;
+      const topPct = Math.min(80, Math.max(15, (y / total) * 100));
+      inputsRow.style.flex = '0 0 ' + topPct + '%';
+      resultWrap.style.flex = '1 1 ' + (100 - topPct) + '%';
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+  })();
+
+  // init
+  loadState();
+  viewBtns.forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  runDiff();
+})();
+</script>
+</body>
+</html>
