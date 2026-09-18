@@ -195,6 +195,12 @@
     display:flex; align-items:center; justify-content:center;
     height:100%; text-align:center; padding: 0 20px;
   }
+  .notice{
+    color: var(--muted);
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
 
   /* resizable split between inputs and result */
   #splitter{
@@ -357,21 +363,36 @@
   }
 
   // ---------- Myers diff over arbitrary token arrays ----------
-  // Returns raw array of {type:'equal'|'insert'|'delete', a, b} index ops (unmerged).
+  // Above this many combined tokens, even a single O(D^2) trace (for two
+  // largely-unrelated inputs, where D approaches N+M) risks freezing the
+  // main thread — bail out and let the caller fall back to a cheaper mode.
+  const MAX_DIFF_TOKENS = 20000;
+
+  // Returns raw array of {type:'equal'|'insert'|'delete', a, b} index ops (unmerged),
+  // or null if the inputs are too large to diff safely (see MAX_DIFF_TOKENS).
   function computeRawOps(na, nb){
     const N = na.length, M = nb.length;
     const MAX = N + M;
     if(MAX === 0) return [];
+    if(MAX > MAX_DIFF_TOKENS) return null;
 
     const offset = MAX;
     const size = 2 * MAX + 1;
     let v = new Int32Array(size);
-    const trace = [];
+    // Only the window around [-d, d] of v is ever read back for step d (plus
+    // one slot of padding on each side, since the "no neighbor yet" edge case
+    // reads one index past the window), so each trace entry only needs to
+    // keep that window rather than a copy of the full array — for typical
+    // diffs (small edit distance D) this cuts trace memory and copy time
+    // from O(D*(N+M)) down to O(D^2).
+    const trace = []; // entries: {arr, start} where arr[i] === v[start + i]
 
     let dFinal = -1;
     outer:
     for(let d = 0; d <= MAX; d++){
-      trace.push(v.slice());
+      const start = Math.max(0, offset - d - 1);
+      const end = Math.min(size, offset + d + 2);
+      trace.push({ arr: v.slice(start, end), start });
       for(let k = -d; k <= d; k += 2){
         let x;
         if(k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])){
@@ -390,15 +411,15 @@
     let x = N, y = M;
     const ops = [];
     for(let d = trace.length - 1; d >= 0; d--){
-      const vv = trace[d];
+      const { arr: vv, start } = trace[d];
       const k = x - y;
       let prevK;
-      if(k === -d || (k !== d && vv[offset + k - 1] < vv[offset + k + 1])){
+      if(k === -d || (k !== d && vv[offset + k - 1 - start] < vv[offset + k + 1 - start])){
         prevK = k + 1;
       } else {
         prevK = k - 1;
       }
-      const prevX = vv[offset + prevK];
+      const prevX = vv[offset + prevK - start];
       const prevY = prevX - prevK;
 
       while(x > prevX && y > prevY){
@@ -420,11 +441,13 @@
   }
 
   // Returns array of {type: 'equal'|'insert'|'delete', text: string}, merging
-  // consecutive same-type runs and mapping back to original (un-normalized) text.
+  // consecutive same-type runs and mapping back to original (un-normalized) text,
+  // or null if the inputs exceed MAX_DIFF_TOKENS (see computeRawOps).
   function diffTokens(aTokens, bTokens, opts){
     const na = aTokens.map(t => normalize(t, opts));
     const nb = bTokens.map(t => normalize(t, opts));
     const ops = computeRawOps(na, nb);
+    if(ops === null) return null;
 
     const merged = [];
     for(const op of ops){
@@ -443,10 +466,13 @@
   // force a break — it's folded into the surrounding replace block so an
   // unrelated phrase (e.g. "What is up" -> "How's it going") reads as one
   // replacement instead of alternating per word around shared spaces.
+  // Returns null if the pair is too large to sub-diff at the word level
+  // (see MAX_DIFF_TOKENS) — caller falls back to a plain sentence replace.
   function diffWordsMerged(aWords, bWords, opts){
     const na = aWords.map(t => normalize(t, opts));
     const nb = bWords.map(t => normalize(t, opts));
     const raw = computeRawOps(na, nb);
+    if(raw === null) return null;
 
     const blocks = [];
     let cur = null;
@@ -484,12 +510,14 @@
   // Hierarchical diff for "Sentences" mode: align sentences first, then for
   // any block of sentences that got replaced, sub-diff that block at the word
   // level (like Word's track changes) instead of swapping whole sentences.
+  // Returns null if there are too many sentences to align (see MAX_DIFF_TOKENS).
   function diffSentences(aText, bText, opts){
     const aSent = tokenizeSentences(aText);
     const bSent = tokenizeSentences(bText);
     const na = aSent.map(t => normalize(t, opts));
     const nb = bSent.map(t => normalize(t, opts));
     const ops = computeRawOps(na, nb);
+    if(ops === null) return null;
 
     const result = [];
     let i = 0;
@@ -508,7 +536,12 @@
       const pairCount = Math.min(dels.length, inss.length);
       for(let p = 0; p < pairCount; p++){
         const subOps = diffWordsMerged(tokenizeWords(dels[p]), tokenizeWords(inss[p]), opts);
-        for(const op of subOps) result.push(op);
+        if(subOps === null){
+          result.push({type: 'delete', text: dels[p]});
+          result.push({type: 'insert', text: inss[p]});
+        } else {
+          for(const op of subOps) result.push(op);
+        }
       }
       for(let p = pairCount; p < dels.length; p++) result.push({type: 'delete', text: dels[p]});
       for(let p = pairCount; p < inss.length; p++) result.push({type: 'insert', text: inss[p]});
@@ -542,9 +575,24 @@
       return;
     }
 
-    const ops = mode === 'sentence'
+    let ops = mode === 'sentence'
       ? diffSentences(a, b, opts)
       : diffTokens(tokenize(a, mode), tokenize(b, mode), opts);
+
+    let tooLarge = false;
+    if(ops === null){
+      // Primary mode exceeded MAX_DIFF_TOKENS — fall back to the cheapest
+      // granularity (line-level has the fewest tokens for a given text).
+      ops = mode === 'line' ? null : diffTokens(tokenize(a, 'line'), tokenize(b, 'line'), opts);
+      if(ops === null){
+        leftResult.innerHTML = '<div class="empty">Text is too large to diff.</div>';
+        rightResult.innerHTML = '';
+        addCount.textContent = '0';
+        delCount.textContent = '0';
+        return;
+      }
+      tooLarge = true;
+    }
 
     let adds = 0, dels = 0;
     for(const op of ops){
@@ -554,6 +602,10 @@
     addCount.textContent = adds;
     delCount.textContent = dels;
 
+    const notice = tooLarge
+      ? '<div class="notice">Text too large for ' + esc(mode) + '-level diff — showing line-level diff instead.</div>'
+      : '';
+
     if(view === 'inline'){
       let html = '';
       for(const op of ops){
@@ -562,7 +614,7 @@
         else if(op.type === 'insert') html += '<ins>' + t + '</ins>';
         else html += '<del>' + t + '</del>';
       }
-      leftResult.innerHTML = html || '<div class="empty">No differences.</div>';
+      leftResult.innerHTML = notice + (html || '<div class="empty">No differences.</div>');
       rightResult.style.display = 'none';
       leftResult.style.flex = '1';
     } else {
@@ -573,8 +625,8 @@
         else if(op.type === 'delete'){ leftHtml += '<del>' + t + '</del>'; }
         else if(op.type === 'insert'){ rightHtml += '<ins>' + t + '</ins>'; }
       }
-      leftResult.innerHTML = leftHtml || '<div class="empty">Empty</div>';
-      rightResult.innerHTML = rightHtml || '<div class="empty">Empty</div>';
+      leftResult.innerHTML = notice + (leftHtml || '<div class="empty">Empty</div>');
+      rightResult.innerHTML = notice + (rightHtml || '<div class="empty">Empty</div>');
       rightResult.style.display = 'block';
     }
   }
