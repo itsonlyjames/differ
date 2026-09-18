@@ -562,6 +562,33 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // With "ignore whitespace" on, whitespace can still end up inside a
+  // highlighted insert/delete — either as the whole op (whitespace exists on
+  // only one side, e.g. "ab" vs "a b" tokenize differently) or just at its
+  // edges (a changed sentence/word butting up against unchanged whitespace).
+  // Peel any leading/trailing whitespace off insert/delete ops into plain
+  // equal text so no space is ever highlighted when the option is checked.
+  function stripWhitespaceHighlights(ops){
+    const expanded = [];
+    for(const op of ops){
+      if(op.type === 'equal'){ expanded.push(op); continue; }
+      const [, lead, core, trail] = op.text.match(/^(\s*)([\s\S]*?)(\s*)$/);
+      if(lead) expanded.push({type: 'equal', text: lead});
+      if(core) expanded.push({type: op.type, text: core});
+      if(trail) expanded.push({type: 'equal', text: trail});
+    }
+
+    const merged = [];
+    for(const op of expanded){
+      if(merged.length && merged[merged.length-1].type === op.type){
+        merged[merged.length-1].text += op.text;
+      } else {
+        merged.push({type: op.type, text: op.text});
+      }
+    }
+    return merged;
+  }
+
   function runDiff(){
     const mode = granularitySel.value;
     const opts = { ignoreCase: ignoreCase.checked, ignoreWs: ignoreWs.checked };
@@ -593,6 +620,8 @@
       }
       tooLarge = true;
     }
+
+    if(opts.ignoreWs) ops = stripWhitespaceHighlights(ops);
 
     let adds = 0, dels = 0;
     for(const op of ops){
