@@ -221,7 +221,8 @@
 
   <div class="controls">
     <select id="granularity" title="Diff granularity">
-      <option value="word" selected>Words</option>
+      <option value="sentence" selected>Sentences</option>
+      <option value="word">Words</option>
       <option value="char">Characters</option>
       <option value="line">Lines</option>
     </select>
@@ -312,7 +313,7 @@
       const s = JSON.parse(raw);
       textA.value = s.a || '';
       textB.value = s.b || '';
-      granularitySel.value = s.granularity || 'word';
+      granularitySel.value = s.granularity || 'sentence';
       ignoreCase.checked = !!s.ignoreCase;
       ignoreWs.checked = !!s.ignoreWs;
       view = s.view === 'inline' ? 'inline' : 'split';
@@ -324,16 +325,27 @@
     return Array.from(text);
   }
   function tokenizeWords(text){
-    return text.match(/\s+|[^\s]+/g) || [];
+    // Whitespace runs, word runs (letters/digits, with internal apostrophes
+    // kept so contractions like "How's" stay one token), or a single
+    // punctuation character — so punctuation diffs separately from words.
+    return text.match(/\s+|[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*|[^\sA-Za-z0-9]/g) || [];
   }
   function tokenizeLines(text){
     const parts = text.split(/(?<=\n)/);
     if(parts.length && parts[parts.length-1] === '') parts.pop();
     return parts;
   }
+  function tokenizeSentences(text){
+    // Split right after a sentence terminator when followed by whitespace/end,
+    // or after a blank line, so each token (with its trailing whitespace) is
+    // a whole sentence and tokens rejoin to the exact original text.
+    const parts = text.split(/(?<=[.!?])(?=\s|$)|(?<=\n\s*\n)/);
+    return parts.filter(p => p !== '');
+  }
   function tokenize(text, mode){
     if(mode === 'char') return tokenizeChars(text);
     if(mode === 'line') return tokenizeLines(text);
+    if(mode === 'sentence') return tokenizeSentences(text);
     return tokenizeWords(text);
   }
 
@@ -345,10 +357,8 @@
   }
 
   // ---------- Myers diff over arbitrary token arrays ----------
-  // Returns array of {type: 'equal'|'insert'|'delete', tok: string}
-  function diffTokens(aTokens, bTokens, opts){
-    const na = aTokens.map(t => normalize(t, opts));
-    const nb = bTokens.map(t => normalize(t, opts));
+  // Returns raw array of {type:'equal'|'insert'|'delete', a, b} index ops (unmerged).
+  function computeRawOps(na, nb){
     const N = na.length, M = nb.length;
     const MAX = N + M;
     if(MAX === 0) return [];
@@ -406,8 +416,16 @@
       }
     }
     ops.reverse();
+    return ops;
+  }
 
-    // map back to original (un-normalized) token text, and merge consecutive same-type runs
+  // Returns array of {type: 'equal'|'insert'|'delete', text: string}, merging
+  // consecutive same-type runs and mapping back to original (un-normalized) text.
+  function diffTokens(aTokens, bTokens, opts){
+    const na = aTokens.map(t => normalize(t, opts));
+    const nb = bTokens.map(t => normalize(t, opts));
+    const ops = computeRawOps(na, nb);
+
     const merged = [];
     for(const op of ops){
       const text = op.type === 'insert' ? bTokens[op.b] : aTokens[op.a];
@@ -415,6 +433,93 @@
         merged[merged.length-1].text += text;
       } else {
         merged.push({type: op.type, text});
+      }
+    }
+    return merged;
+  }
+
+  // Word-level diff for a single replaced-sentence pair. Behaves like diffTokens,
+  // except a whitespace-only equal token sandwiched between changes doesn't
+  // force a break — it's folded into the surrounding replace block so an
+  // unrelated phrase (e.g. "What is up" -> "How's it going") reads as one
+  // replacement instead of alternating per word around shared spaces.
+  function diffWordsMerged(aWords, bWords, opts){
+    const na = aWords.map(t => normalize(t, opts));
+    const nb = bWords.map(t => normalize(t, opts));
+    const raw = computeRawOps(na, nb);
+
+    const blocks = [];
+    let cur = null;
+    for(const op of raw){
+      if(op.type === 'equal'){
+        const text = aWords[op.a];
+        const isWs = /^\s*$/.test(text);
+        if(!isWs){
+          blocks.push({type: 'equal', text});
+          cur = null;
+        } else if(cur){
+          cur.del += text;
+          cur.ins += text;
+        } else {
+          blocks.push({type: 'equal', text});
+        }
+      } else {
+        if(!cur){ cur = {type: 'replace', del: '', ins: ''}; blocks.push(cur); }
+        if(op.type === 'delete') cur.del += aWords[op.a];
+        else cur.ins += bWords[op.b];
+      }
+    }
+
+    const result = [];
+    for(const b of blocks){
+      if(b.type === 'equal') result.push({type: 'equal', text: b.text});
+      else {
+        if(b.del) result.push({type: 'delete', text: b.del});
+        if(b.ins) result.push({type: 'insert', text: b.ins});
+      }
+    }
+    return result;
+  }
+
+  // Hierarchical diff for "Sentences" mode: align sentences first, then for
+  // any block of sentences that got replaced, sub-diff that block at the word
+  // level (like Word's track changes) instead of swapping whole sentences.
+  function diffSentences(aText, bText, opts){
+    const aSent = tokenizeSentences(aText);
+    const bSent = tokenizeSentences(bText);
+    const na = aSent.map(t => normalize(t, opts));
+    const nb = bSent.map(t => normalize(t, opts));
+    const ops = computeRawOps(na, nb);
+
+    const result = [];
+    let i = 0;
+    while(i < ops.length){
+      if(ops[i].type === 'equal'){
+        result.push({type: 'equal', text: aSent[ops[i].a]});
+        i++;
+        continue;
+      }
+      const dels = [], inss = [];
+      while(i < ops.length && ops[i].type !== 'equal'){
+        if(ops[i].type === 'delete') dels.push(aSent[ops[i].a]);
+        else inss.push(bSent[ops[i].b]);
+        i++;
+      }
+      const pairCount = Math.min(dels.length, inss.length);
+      for(let p = 0; p < pairCount; p++){
+        const subOps = diffWordsMerged(tokenizeWords(dels[p]), tokenizeWords(inss[p]), opts);
+        for(const op of subOps) result.push(op);
+      }
+      for(let p = pairCount; p < dels.length; p++) result.push({type: 'delete', text: dels[p]});
+      for(let p = pairCount; p < inss.length; p++) result.push({type: 'insert', text: inss[p]});
+    }
+
+    const merged = [];
+    for(const op of result){
+      if(merged.length && merged[merged.length-1].type === op.type){
+        merged[merged.length-1].text += op.text;
+      } else {
+        merged.push({type: op.type, text: op.text});
       }
     }
     return merged;
@@ -437,9 +542,9 @@
       return;
     }
 
-    const aTok = tokenize(a, mode);
-    const bTok = tokenize(b, mode);
-    const ops = diffTokens(aTok, bTok, opts);
+    const ops = mode === 'sentence'
+      ? diffSentences(a, b, opts)
+      : diffTokens(tokenize(a, mode), tokenize(b, mode), opts);
 
     let adds = 0, dels = 0;
     for(const op of ops){
